@@ -58,8 +58,9 @@ class OllamaClient:
         temperature: float = 0.0,
         timeout: int = 120,
         json_format: bool = False,
+        images: Optional[list] = None,
     ) -> Optional[str]:
-        """Generate a response from the local model."""
+        """Generate a response from the local model, optionally with image input."""
         try:
             kwargs = {
                 "model": self.model,
@@ -68,6 +69,8 @@ class OllamaClient:
             }
             if json_format:
                 kwargs["format"] = "json"
+            if images:
+                kwargs["images"] = images
 
             response = self.client.generate(**kwargs)
             return (response.get("response") or "").strip()
@@ -81,6 +84,7 @@ class OllamaClient:
         temperature: float = 0.0,
         timeout: int = 120,
         max_retries: int = 1,
+        images: Optional[list] = None,
     ) -> Optional[dict]:
         """Generate and parse JSON from Ollama with one retry on malformed output."""
         for attempt in range(max_retries + 1):
@@ -89,6 +93,7 @@ class OllamaClient:
                 temperature=temperature,
                 timeout=timeout,
                 json_format=True,
+                images=images,
             )
             if not response:
                 return None

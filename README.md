@@ -35,9 +35,9 @@ Open **http://localhost:8080**
 
 ## Web UI Features
 
-- **Agent Activity panel** — live thinking/tool/success steps streamed during ingestion and payment
-- **Bills table** — structured extraction results
-- **Payment queue** — prioritized tasks with prepare flow
+- **Chat coordinator** — instruct Gemma to scan allowed folders, find ZIP files, and process bills
+- **Collapsible agent turns** — sequential Claude Code-style activity groups
+- **Bills table** — includes extracted **Pay Online URL** column
 - **Permission modal** — explicit approve/deny before mock payment submission
 - **Audit report** — totals, confirmations, timeline
 

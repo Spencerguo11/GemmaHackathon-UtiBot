@@ -116,3 +116,31 @@ class AuditEventORM(Base):
     job = relationship("JobORM", back_populates="audit_events")
     bill = relationship("BillORM", back_populates="audit_events")
     task = relationship("PaymentTaskORM", back_populates="audit_events")
+
+
+class ChatSessionORM(Base):
+    """Chat conversation session."""
+
+    __tablename__ = "chat_sessions"
+
+    session_id = Column(String(64), primary_key=True)
+    title = Column(String(255), nullable=False, default="New chat")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    messages = relationship("ChatMessageORM", back_populates="session", cascade="all, delete-orphan")
+
+
+class ChatMessageORM(Base):
+    """Single chat message in a session."""
+
+    __tablename__ = "chat_messages"
+
+    message_id = Column(String(64), primary_key=True)
+    session_id = Column(String(64), ForeignKey("chat_sessions.session_id"), nullable=False)
+    role = Column(String(16), nullable=False)  # user, assistant
+    content = Column(Text, nullable=False)
+    metadata_json = Column(Text, nullable=False, default="{}")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    session = relationship("ChatSessionORM", back_populates="messages")

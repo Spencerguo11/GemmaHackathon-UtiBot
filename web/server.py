@@ -28,6 +28,17 @@ from database.repositories import (
 from models import BillStatus
 from services import OllamaClient
 from services.agent_steps import AgentStepEmitter
+from services.approval_gate import approval_gate, describe_tool_action
+from services.chat_history import (
+    add_message as save_chat_message,
+    create_session as create_chat_session,
+    delete_session as delete_chat_session,
+    get_session_messages,
+    list_sessions as list_chat_sessions,
+)
+from services.run_registry import run_registry
+from agents.coordinator_agent import run_coordinator_chat
+from services.data_cleanup import clear_bills, clear_payments, clear_report, clear_workspace
 from services.payment_service import prepare_mock_payment, submit_mock_payment
 from workflows.ingestion_workflow import process_upload_zip
 
@@ -65,7 +76,13 @@ class ApprovalRequest(BaseModel):
     approved: bool
 
 
+class ChatRequest(BaseModel):
+    message: str
+    session_id: str | None = None
+
+
 def _bill_dict(bill) -> dict[str, Any]:
+    pay_online = bill.document_payment_url or bill.verified_payment_url or ""
     return {
         "bill_id": bill.bill_id,
         "job_id": bill.job_id,
@@ -76,7 +93,10 @@ def _bill_dict(bill) -> dict[str, Any]:
         "billing_period": f"{bill.billing_period_start} → {bill.billing_period_end}",
         "amount_due": float(bill.amount_due),
         "due_date": bill.due_date,
-        "payment_url": bill.verified_payment_url or "",
+        "document_payment_url": bill.document_payment_url or "",
+        "verified_payment_url": bill.verified_payment_url or "",
+        "pay_online_url": pay_online,
+        "payment_url": pay_online,
         "confidence": bill.extraction_confidence,
         "status": bill.status.value,
         "review_reason": bill.review_reason or "",
@@ -109,6 +129,104 @@ def api_status() -> dict[str, Any]:
     }
 
 
+@app.get("/api/chat/sessions")
+def api_list_chat_sessions() -> dict[str, Any]:
+    session = get_session()
+    try:
+        return {"sessions": list_chat_sessions(session)}
+    finally:
+        session.close()
+
+
+@app.post("/api/chat/sessions")
+def api_create_chat_session() -> dict[str, Any]:
+    session = get_session()
+    try:
+        return {"session": create_chat_session(session)}
+    finally:
+        session.close()
+
+
+@app.get("/api/chat/sessions/{session_id}")
+def api_get_chat_session(session_id: str) -> dict[str, Any]:
+    session = get_session()
+    try:
+        payload = get_session_messages(session, session_id)
+        if not payload:
+            raise HTTPException(status_code=404, detail="Chat session not found")
+        return payload
+    finally:
+        session.close()
+
+
+@app.delete("/api/chat/sessions/{session_id}")
+def api_delete_chat_session(session_id: str) -> dict[str, Any]:
+    session = get_session()
+    try:
+        if not delete_chat_session(session, session_id):
+            raise HTTPException(status_code=404, detail="Chat session not found")
+        return {"success": True}
+    finally:
+        session.close()
+
+
+@app.post("/api/chat")
+async def chat_with_agent(payload: ChatRequest) -> dict[str, str]:
+    message = (payload.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message is required")
+
+    run_id = uuid4().hex
+    queue: Queue = Queue()
+    _event_queues[run_id] = queue
+
+    db = get_session()
+    try:
+        chat_session_id = payload.session_id
+        if not chat_session_id:
+            chat_session_id = create_chat_session(db)["session_id"]
+        save_chat_message(db, chat_session_id, "user", message)
+    finally:
+        db.close()
+
+    def worker() -> None:
+        emitter = AgentStepEmitter(callback=queue.put)
+        session = get_session()
+        try:
+            result = run_coordinator_chat(
+                message,
+                session,
+                run_id,
+                steps=emitter,
+                chat_session_id=chat_session_id,
+            )
+            if result.get("cancelled") and not result.get("message"):
+                result["message"] = "Stopped by user."
+            emitter.done({**result, "session_id": chat_session_id})
+        except Exception as exc:
+            emitter.error("Coordinator failed", str(exc))
+            emitter.done({"success": False, "error": str(exc), "session_id": chat_session_id})
+        finally:
+            session.close()
+
+    threading.Thread(target=worker, daemon=True).start()
+    return {"run_id": run_id, "session_id": chat_session_id}
+
+
+@app.post("/api/runs/{run_id}/stop")
+def stop_run(run_id: str) -> dict[str, Any]:
+    if not run_registry.cancel(run_id):
+        raise HTTPException(status_code=404, detail="Run not found or already finished")
+    return {"success": True, "stopped": True}
+
+
+@app.post("/api/runs/{run_id}/approve")
+def approve_run_action(run_id: str, payload: ApprovalRequest) -> dict[str, Any]:
+    if not approval_gate.resolve(run_id, payload.approved):
+        raise HTTPException(status_code=404, detail="No pending approval for this run")
+    return {"success": True, "approved": payload.approved}
+
+
 @app.post("/api/jobs/upload")
 async def upload_zip(file: UploadFile = File(...)) -> dict[str, str]:
     if not file.filename or not file.filename.lower().endswith(".zip"):
@@ -125,14 +243,35 @@ async def upload_zip(file: UploadFile = File(...)) -> dict[str, str]:
 
     def worker() -> None:
         emitter = AgentStepEmitter(callback=queue.put)
+        run_registry.register(run_id)
+        approval_gate.register(run_id)
         session = get_session()
         try:
+            description = describe_tool_action("process_zip", {"path": file.filename or str(tmp_path)})
+            emitter.permission(
+                "Approval required before execution",
+                description,
+                approval_type="tool_execution",
+                run_id=run_id,
+                tool="process_zip",
+                args={"path": file.filename or str(tmp_path)},
+            )
+            if not approval_gate.request(
+                run_id,
+                {"approval_type": "tool_execution", "tool": "process_zip", "description": description},
+            ):
+                emitter.warning("Denied", "Upload processing cancelled by user")
+                emitter.done({"success": False, "message": "Upload cancelled by user."})
+                return
+            emitter.success("Approved", "User allowed ZIP processing")
             result = process_upload_zip(tmp_path, session, steps=emitter)
             emitter.done(result)
         except Exception as exc:
             emitter.error("Unexpected error", str(exc))
             emitter.done({"success": False, "errors": [str(exc)]})
         finally:
+            approval_gate.cleanup(run_id)
+            run_registry.cleanup(run_id)
             session.close()
             tmp_path.unlink(missing_ok=True)
 
@@ -220,14 +359,33 @@ def prepare_task(task_id: str) -> dict[str, str]:
 
     def worker() -> None:
         emitter = AgentStepEmitter(callback=queue.put)
+        run_registry.register(run_id)
+        approval_gate.register(run_id)
         session = get_session()
         try:
+            emitter.permission(
+                "Approval required before payment automation",
+                f"Prepare mock payment for task {task_id}",
+                approval_type="tool_execution",
+                run_id=run_id,
+                tool="prepare_mock_payment",
+                args={"task_id": task_id},
+            )
+            if not approval_gate.request(
+                run_id,
+                {"approval_type": "tool_execution", "tool": "prepare_mock_payment", "task_id": task_id},
+            ):
+                emitter.warning("Denied", "Payment preparation cancelled")
+                emitter.done({"success": False, "cancelled": True})
+                return
             approval = prepare_mock_payment(session, task_id, steps=emitter)
             emitter.done({"success": True, "approval": approval})
         except Exception as exc:
             emitter.error("Payment preparation failed", str(exc))
             emitter.done({"success": False, "error": str(exc)})
         finally:
+            approval_gate.cleanup(run_id)
+            run_registry.cleanup(run_id)
             session.close()
 
     threading.Thread(target=worker, daemon=True).start()
@@ -242,6 +400,7 @@ def submit_task(task_id: str, payload: ApprovalRequest) -> dict[str, str]:
 
     def worker() -> None:
         emitter = AgentStepEmitter(callback=queue.put)
+        run_registry.register(run_id)
         session = get_session()
         try:
             result = submit_mock_payment(session, task_id, approved=payload.approved, steps=emitter)
@@ -250,6 +409,7 @@ def submit_task(task_id: str, payload: ApprovalRequest) -> dict[str, str]:
             emitter.error("Payment submission failed", str(exc))
             emitter.done({"success": False, "error": str(exc)})
         finally:
+            run_registry.cleanup(run_id)
             session.close()
 
     threading.Thread(target=worker, daemon=True).start()
@@ -305,6 +465,46 @@ def report() -> dict[str, Any]:
                 for e in events
             ],
         }
+    finally:
+        session.close()
+
+
+@app.delete("/api/clear/workspace")
+def api_clear_workspace() -> dict[str, Any]:
+    session = get_session()
+    try:
+        counts = clear_workspace(session)
+        return {"success": True, "cleared": counts}
+    finally:
+        session.close()
+
+
+@app.delete("/api/clear/bills")
+def api_clear_bills() -> dict[str, Any]:
+    session = get_session()
+    try:
+        counts = clear_bills(session)
+        return {"success": True, "cleared": counts}
+    finally:
+        session.close()
+
+
+@app.delete("/api/clear/payments")
+def api_clear_payments() -> dict[str, Any]:
+    session = get_session()
+    try:
+        counts = clear_payments(session)
+        return {"success": True, "cleared": counts}
+    finally:
+        session.close()
+
+
+@app.delete("/api/clear/report")
+def api_clear_report() -> dict[str, Any]:
+    session = get_session()
+    try:
+        counts = clear_report(session)
+        return {"success": True, "cleared": counts}
     finally:
         session.close()
 

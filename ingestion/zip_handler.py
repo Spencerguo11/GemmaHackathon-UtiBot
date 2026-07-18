@@ -13,7 +13,7 @@ class ZIPExtractionError(Exception):
 
 def validate_zip_file(
     zip_path: Path,
-    max_files: int = 25,
+    max_files: int = 75,
     max_uncompressed_mb: int = 100,
 ) -> Tuple[bool, List[str], List[str]]:
     """
@@ -89,7 +89,7 @@ def validate_zip_file(
 def extract_pdfs_from_zip(
     zip_path: Path,
     output_dir: Path,
-    max_files: int = 25,
+    max_files: int = 75,
     max_uncompressed_mb: int = 100,
 ) -> Tuple[List[Path], List[str]]:
     """

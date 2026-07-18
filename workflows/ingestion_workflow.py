@@ -16,12 +16,15 @@ from ingestion import (
     detect_logical_duplicates,
     extract_pdf_text,
     extract_pdfs_from_zip,
+    render_pdf_pages_to_images,
 )
 from models import AuditEvent, BillStatus, EventType
 from services import OllamaClient, extract_bill_from_text, validate_bill_extraction
 from services.agent_steps import AgentStepEmitter
+from services.document_agent import extract_bill_from_images
 from services.gemma_client import OllamaClientError
 from services.task_planner import create_payment_task, is_payment_eligible
+from services.url_extractor import pick_best_payment_url
 from services.validation_service import create_bill_from_extraction, create_review_bill
 
 logger = logging.getLogger(__name__)
@@ -74,31 +77,52 @@ def process_bill_file(
         steps.error("PDF extraction failed", str(exc), filename=pdf_path.name)
         return False, "", [f"Corrupt PDF: {exc}"]
 
-    if not text:
-        review_reason = "No embedded text found; scanned PDF support is not enabled"
-        steps.warning("No embedded text", review_reason, filename=pdf_path.name)
-        bill = create_review_bill(job_id, pdf_path.name, file_hash, review_reason)
-        bill_id = bill_repo.create(bill)
-        audit_repo.log_event(
-            AuditEvent(
-                event_id="",
-                job_id=job_id,
-                bill_id=bill_id,
-                event_type=EventType.BILL_FLAGGED_FOR_REVIEW,
-                actor="system",
-                timestamp=datetime.utcnow(),
-                details_json={"filename": pdf_path.name, "reason": review_reason},
-            )
+    cleaned_text = ""
+    if text:
+        cleaned_text = clean_bill_text(text)
+        steps.thinking(
+            "Analyzing bill with local Gemma",
+            f"Extracting structured fields from {pdf_path.name}",
+            filename=pdf_path.name,
         )
-        return True, bill_id, [review_reason]
+        extraction = extract_bill_from_text(cleaned_text, ollama_client)
+    else:
+        steps.warning(
+            "No embedded text found",
+            "Falling back to vision extraction from scanned page image(s)",
+            filename=pdf_path.name,
+        )
+        try:
+            images = render_pdf_pages_to_images(pdf_path)
+        except Exception as exc:
+            steps.error("Page rendering failed", str(exc), filename=pdf_path.name)
+            images = []
 
-    cleaned_text = clean_bill_text(text)
-    steps.thinking(
-        "Analyzing bill with local Gemma",
-        f"Extracting structured fields from {pdf_path.name}",
-        filename=pdf_path.name,
-    )
-    extraction = extract_bill_from_text(cleaned_text, ollama_client)
+        if not images:
+            review_reason = "No embedded text and could not render page images for vision extraction"
+            steps.warning("Vision fallback unavailable", review_reason, filename=pdf_path.name)
+            bill = create_review_bill(job_id, pdf_path.name, file_hash, review_reason)
+            bill_id = bill_repo.create(bill)
+            audit_repo.log_event(
+                AuditEvent(
+                    event_id="",
+                    job_id=job_id,
+                    bill_id=bill_id,
+                    event_type=EventType.BILL_FLAGGED_FOR_REVIEW,
+                    actor="system",
+                    timestamp=datetime.utcnow(),
+                    details_json={"filename": pdf_path.name, "reason": review_reason},
+                )
+            )
+            return True, bill_id, [review_reason]
+
+        steps.thinking(
+            "Analyzing scanned bill with local Gemma vision",
+            f"Reading {len(images)} page image(s) from {pdf_path.name}",
+            filename=pdf_path.name,
+        )
+        extraction = extract_bill_from_images(images, ollama_client)
+
     is_valid, validation_errors = validate_bill_extraction(extraction, cleaned_text)
 
     bill = create_bill_from_extraction(
@@ -107,8 +131,12 @@ def process_bill_file(
         source_filename=pdf_path.name,
         file_hash=file_hash,
         validation_errors=validation_errors,
+        source_text=cleaned_text,
     )
     bill_id = bill_repo.create(bill)
+
+    if bill.document_payment_url:
+        steps.tool("Saved pay-online URL", bill.document_payment_url, bill_id=bill_id)
 
     if is_valid and not bill.requires_review:
         steps.success(
@@ -187,6 +215,7 @@ def process_upload_zip(
     steps = steps or AgentStepEmitter()
     job_repo = JobRepository(session)
     audit_repo = AuditRepository(session)
+    bill_repo = BillRepository(session)
     task_repo = PaymentTaskRepository(session)
 
     steps.thinking("Initializing agent", "Checking local Ollama and Gemma model availability")

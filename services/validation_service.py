@@ -9,6 +9,7 @@ from typing import List, Tuple
 from config import get_settings
 from models import Bill, BillExtraction, BillStatus, UtilityType
 from services.provider_service import get_trusted_payment_url, is_trusted_payment_url
+from services.url_extractor import pick_best_payment_url
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -97,6 +98,7 @@ def create_bill_from_extraction(
     source_filename: str,
     file_hash: str,
     validation_errors: list[str] | None = None,
+    source_text: str | None = None,
 ) -> Bill:
     """Create Bill model from extraction data and validation outcome."""
     now = datetime.utcnow()
@@ -117,6 +119,7 @@ def create_bill_from_extraction(
             utility_type = UtilityType.OTHER
 
     verified_payment_url = get_trusted_payment_url(extraction.provider_name)
+    document_payment_url = pick_best_payment_url(source_text or "", extraction.document_payment_url)
     if not verified_payment_url:
         requires_review = True
         review_reason = review_reason or "Provider not found in trusted registry"
@@ -144,7 +147,7 @@ def create_bill_from_extraction(
         previous_balance=extraction.previous_balance or Decimal("0.00"),
         current_charges=extraction.current_charges or Decimal("0.00"),
         amount_due=extraction.amount_due or Decimal("0.00"),
-        document_payment_url=extraction.document_payment_url,
+        document_payment_url=document_payment_url,
         verified_payment_url=verified_payment_url,
         extraction_confidence=extraction.extraction_confidence,
         status=status,

@@ -21,7 +21,7 @@
       </div>
 
       <nav class="nav">
-        <button class="nav-item active" data-view="upload">Upload & Process</button>
+        <button class="nav-item active" data-view="workspace">Workspace</button>
         <button class="nav-item" data-view="bills">Bills</button>
         <button class="nav-item" data-view="payments">Payment Queue</button>
         <button class="nav-item" data-view="report">Audit Report</button>
@@ -41,6 +41,7 @@
       </div>
     </aside>
 
+    <div class="workspace">
     <main class="main">
       <header class="topbar">
         <div>
@@ -52,22 +53,33 @@
         </div>
       </header>
 
-      <section class="view active" id="view-upload">
-        <div class="upload-card">
-          <div class="dropzone" id="dropzone">
-            <input type="file" id="file-input" accept=".zip" hidden />
-            <div class="dropzone-content">
-              <div class="dropzone-icon">📦</div>
-              <h3>Drop your bills ZIP here</h3>
-              <p>or click to browse · PDF files only · processed locally</p>
-              <button class="btn btn-secondary" id="browse-btn" type="button">Choose ZIP file</button>
+      <section class="view active" id="view-workspace">
+        <div class="view-toolbar">
+          <button class="btn btn-secondary" id="clear-workspace" type="button">Clear Workspace</button>
+        </div>
+        <div class="workspace-grid">
+          <div class="upload-card">
+            <h3>Quick Upload</h3>
+            <div class="dropzone" id="dropzone">
+              <input type="file" id="file-input" accept=".zip" hidden />
+              <div class="dropzone-content">
+                <p>Drop a ZIP here or browse manually</p>
+                <button class="btn btn-secondary" id="browse-btn" type="button">Choose ZIP</button>
+              </div>
+            </div>
+            <div class="upload-meta" id="upload-meta" hidden>
+              <span id="selected-file"></span>
+              <button class="btn btn-primary" id="process-btn" type="button">Process ZIP</button>
             </div>
           </div>
-          <div class="upload-meta" id="upload-meta" hidden>
-            <span id="selected-file"></span>
-            <button class="btn btn-primary" id="process-btn" type="button">
-              <span class="btn-label">Start Agent Processing</span>
-            </button>
+          <div class="hint-card">
+            <h3>Agent Chat Commands</h3>
+            <ul>
+              <li>Find utility bill ZIP files in my Downloads folder</li>
+              <li>Search ~/Documents for bills.zip and process it</li>
+              <li>Locate the newest ZIP with utility bills and extract payment URLs</li>
+            </ul>
+            <p class="hint-note">Use the chat panel on the right. The agent plans each step and waits for your approval before listing folders, searching ZIPs, or processing bills.</p>
           </div>
         </div>
 
@@ -81,6 +93,7 @@
       <section class="view" id="view-bills">
         <div class="table-toolbar">
           <button class="btn btn-secondary" id="refresh-bills" type="button">Refresh</button>
+          <button class="btn btn-danger-outline" id="clear-bills" type="button">Clear Bills</button>
         </div>
         <div class="table-wrap">
           <table class="data-table" id="bills-table">
@@ -91,6 +104,7 @@
                 <th>Account</th>
                 <th>Amount Due</th>
                 <th>Due Date</th>
+                <th>Pay Online URL</th>
                 <th>Confidence</th>
                 <th>Status</th>
                 <th>Review Reason</th>
@@ -104,11 +118,15 @@
       <section class="view" id="view-payments">
         <div class="table-toolbar">
           <button class="btn btn-secondary" id="refresh-tasks" type="button">Refresh</button>
+          <button class="btn btn-danger-outline" id="clear-payments" type="button">Clear Queue</button>
         </div>
         <div class="task-grid" id="task-grid"></div>
       </section>
 
       <section class="view" id="view-report">
+        <div class="table-toolbar">
+          <button class="btn btn-danger-outline" id="clear-report" type="button">Clear Report</button>
+        </div>
         <div class="report-grid" id="report-summary"></div>
         <h3 class="section-title">Confirmation Numbers</h3>
         <div class="table-wrap">
@@ -129,20 +147,48 @@
       </section>
     </main>
 
-    <aside class="agent-panel">
+    <div class="panel-resizer" id="panel-resizer" title="Drag to resize agent panel"></div>
+
+    <aside class="agent-panel" id="agent-panel">
       <div class="agent-header">
         <div>
-          <h3>Agent Activity</h3>
-          <p>Live reasoning & tool steps</p>
+          <h3>Coordinator Agent</h3>
+          <p>Human-in-the-loop · local Gemma · approval required</p>
         </div>
-        <button class="btn btn-ghost" id="clear-agent" type="button">Clear</button>
+        <span class="header-badge">HITL</span>
+      </div>
+      <div class="agent-toolbar">
+        <button class="btn btn-ghost" id="new-chat" type="button">New chat</button>
+        <div class="history-wrap">
+          <button class="btn btn-ghost" id="chat-history-btn" type="button">History</button>
+          <div class="history-panel hidden" id="history-panel">
+            <div class="history-panel-head">
+              <strong>Chat history</strong>
+              <button class="btn btn-ghost history-close" id="history-close" type="button">Close</button>
+            </div>
+            <div class="history-list" id="history-list"></div>
+          </div>
+        </div>
+        <button class="btn btn-ghost" id="clear-agent" type="button">Clear feed</button>
       </div>
       <div class="agent-feed" id="agent-feed">
         <div class="agent-empty">
-          <p>Agent steps will appear here as bills are processed or payments are prepared.</p>
+          <p>Every tool execution requires your approval before it runs. Ask the agent to find ZIP files, parse bills, and extract pay-online URLs.</p>
+        </div>
+      </div>
+      <div class="agent-status hidden" id="agent-status">
+        <span class="status-dot-pulse"></span>
+        <span id="agent-status-text">Thinking…</span>
+      </div>
+      <div class="chat-composer">
+        <textarea id="chat-input" rows="2" placeholder="Message the coordinator…"></textarea>
+        <div class="composer-actions">
+          <button class="btn btn-danger-outline" id="chat-stop" type="button" disabled>Stop</button>
+          <button class="btn btn-primary" id="chat-send" type="button">Send</button>
         </div>
       </div>
     </aside>
+    </div>
   </div>
 
   <div class="modal-backdrop hidden" id="approval-modal">

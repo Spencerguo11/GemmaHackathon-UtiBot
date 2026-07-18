@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     high_amount_review_threshold: float = 1000.0
 
     # ZIP and file limits
-    max_zip_files: int = 25
+    max_zip_files: int = 75
     max_uncompressed_mb: int = 100
 
     # Browser automation
