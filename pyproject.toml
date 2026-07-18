@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "utility-coordinator"
+version = "0.1.0"
+description = "Utility Coordinator AI Assistant - Local Gemma-powered bill processing"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-v --tb=short"
+testpaths = ["tests"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 100

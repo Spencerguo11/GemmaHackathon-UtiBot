@@ -1,0 +1,36 @@
+"""Provider registry for utility companies."""
+Rocky Mountain Power Demo:
+  canonical_name: "Rocky Mountain Power Demo"
+  aliases:
+    - "Rocky Mountain Power"
+    - "RMP"
+  utility_type: "electricity"
+  trusted_domains:
+    - "localhost:8001"
+    - "127.0.0.1:8001"
+  payment_url: "http://localhost:8001/pay"
+  mock_provider_port: 8001
+
+Dominion Energy Demo:
+  canonical_name: "Dominion Energy Demo"
+  aliases:
+    - "Dominion Energy"
+    - "Dominion"
+  utility_type: "gas"
+  trusted_domains:
+    - "localhost:8002"
+    - "127.0.0.1:8002"
+  payment_url: "http://localhost:8002/pay"
+  mock_provider_port: 8002
+
+City Water Demo:
+  canonical_name: "City Water Demo"
+  aliases:
+    - "City Water"
+    - "Water Utility"
+  utility_type: "water"
+  trusted_domains:
+    - "localhost:8003"
+    - "127.0.0.1:8003"
+  payment_url: "http://localhost:8003/pay"
+  mock_provider_port: 8003
