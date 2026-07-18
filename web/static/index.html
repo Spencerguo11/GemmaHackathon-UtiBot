@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Utility Coordinator AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/app.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-icon">⚡</div>
+        <div>
+          <h1>Utility Coordinator</h1>
+          <p>Local AI Agent</p>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-item active" data-view="upload">Upload & Process</button>
+        <button class="nav-item" data-view="bills">Bills</button>
+        <button class="nav-item" data-view="payments">Payment Queue</button>
+        <button class="nav-item" data-view="report">Audit Report</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="status-card" id="ollama-status">
+          <span class="status-dot"></span>
+          <div>
+            <strong>Ollama</strong>
+            <p>Checking…</p>
+          </div>
+        </div>
+        <p class="privacy-note">
+          Bill extraction runs locally through Ollama. Documents are not sent to cloud LLMs.
+        </p>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h2 id="view-title">Upload & Process</h2>
+          <p id="view-subtitle">Upload a ZIP of utility bill PDFs to begin</p>
+        </div>
+        <div class="topbar-actions">
+          <span class="badge" id="model-badge">gemma4:e4b</span>
+        </div>
+      </header>
+
+      <section class="view active" id="view-upload">
+        <div class="upload-card">
+          <div class="dropzone" id="dropzone">
+            <input type="file" id="file-input" accept=".zip" hidden />
+            <div class="dropzone-content">
+              <div class="dropzone-icon">📦</div>
+              <h3>Drop your bills ZIP here</h3>
+              <p>or click to browse · PDF files only · processed locally</p>
+              <button class="btn btn-secondary" id="browse-btn" type="button">Choose ZIP file</button>
+            </div>
+          </div>
+          <div class="upload-meta" id="upload-meta" hidden>
+            <span id="selected-file"></span>
+            <button class="btn btn-primary" id="process-btn" type="button">
+              <span class="btn-label">Start Agent Processing</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="metrics-row" id="upload-metrics" hidden>
+          <div class="metric"><span>Bills</span><strong id="metric-bills">0</strong></div>
+          <div class="metric"><span>Need Review</span><strong id="metric-review">0</strong></div>
+          <div class="metric"><span>Duplicates</span><strong id="metric-dups">0</strong></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-bills">
+        <div class="table-toolbar">
+          <button class="btn btn-secondary" id="refresh-bills" type="button">Refresh</button>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table" id="bills-table">
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th>Type</th>
+                <th>Account</th>
+                <th>Amount Due</th>
+                <th>Due Date</th>
+                <th>Confidence</th>
+                <th>Status</th>
+                <th>Review Reason</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="view" id="view-payments">
+        <div class="table-toolbar">
+          <button class="btn btn-secondary" id="refresh-tasks" type="button">Refresh</button>
+        </div>
+        <div class="task-grid" id="task-grid"></div>
+      </section>
+
+      <section class="view" id="view-report">
+        <div class="report-grid" id="report-summary"></div>
+        <h3 class="section-title">Confirmation Numbers</h3>
+        <div class="table-wrap">
+          <table class="data-table" id="transactions-table">
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th>Amount</th>
+                <th>Confirmation</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <h3 class="section-title">Audit Timeline</h3>
+        <div class="timeline" id="audit-timeline"></div>
+      </section>
+    </main>
+
+    <aside class="agent-panel">
+      <div class="agent-header">
+        <div>
+          <h3>Agent Activity</h3>
+          <p>Live reasoning & tool steps</p>
+        </div>
+        <button class="btn btn-ghost" id="clear-agent" type="button">Clear</button>
+      </div>
+      <div class="agent-feed" id="agent-feed">
+        <div class="agent-empty">
+          <p>Agent steps will appear here as bills are processed or payments are prepared.</p>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="modal-backdrop hidden" id="approval-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-icon">🛡️</div>
+        <div>
+          <h3>Approve Mock Payment?</h3>
+          <p>The agent is requesting permission before submitting payment.</p>
+        </div>
+      </div>
+      <div class="approval-details" id="approval-details"></div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" id="deny-payment" type="button">Cancel</button>
+        <button class="btn btn-danger-outline" id="cancel-payment" type="button">Deny Payment</button>
+        <button class="btn btn-primary" id="approve-payment" type="button">Approve Mock Payment</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

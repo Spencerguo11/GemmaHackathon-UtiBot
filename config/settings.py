@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     # Debug mode
     debug: bool = False
 
+    # Web UI
+    web_host: str = "0.0.0.0"
+    web_port: int = 8080
+
     class Config:
         env_file = ".env"
         case_sensitive = False

@@ -10,6 +10,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from config import JOBS_DIR, get_settings
+from database.repositories import AuditRepository, BillRepository, JobRepository, PaymentTaskRepository
 from ingestion import (
     clean_bill_text,
     detect_logical_duplicates,
@@ -18,10 +19,10 @@ from ingestion import (
 )
 from models import AuditEvent, BillStatus, EventType
 from services import OllamaClient, extract_bill_from_text, validate_bill_extraction
+from services.agent_steps import AgentStepEmitter
 from services.gemma_client import OllamaClientError
 from services.task_planner import create_payment_task, is_payment_eligible
 from services.validation_service import create_bill_from_extraction, create_review_bill
-from database.repositories import AuditRepository, BillRepository, JobRepository, PaymentTaskRepository
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -41,14 +42,19 @@ def process_bill_file(
     job_id: str,
     session: Session,
     ollama_client: OllamaClient,
+    steps: Optional[AgentStepEmitter] = None,
 ) -> tuple[bool, str, list[str]]:
     """Process a single PDF bill file."""
     bill_repo = BillRepository(session)
     audit_repo = AuditRepository(session)
     file_hash = hash_file(pdf_path)
 
+    steps = steps or AgentStepEmitter()
+    steps.tool("Reading PDF", pdf_path.name, filename=pdf_path.name)
+
     existing = bill_repo.get_by_hash(file_hash)
     if existing:
+        steps.warning("Exact duplicate skipped", pdf_path.name, bill_id=existing.bill_id)
         audit_repo.log_event(
             AuditEvent(
                 event_id="",
@@ -65,10 +71,12 @@ def process_bill_file(
     try:
         text = extract_pdf_text(pdf_path)
     except Exception as exc:
+        steps.error("PDF extraction failed", str(exc), filename=pdf_path.name)
         return False, "", [f"Corrupt PDF: {exc}"]
 
     if not text:
         review_reason = "No embedded text found; scanned PDF support is not enabled"
+        steps.warning("No embedded text", review_reason, filename=pdf_path.name)
         bill = create_review_bill(job_id, pdf_path.name, file_hash, review_reason)
         bill_id = bill_repo.create(bill)
         audit_repo.log_event(
@@ -85,6 +93,11 @@ def process_bill_file(
         return True, bill_id, [review_reason]
 
     cleaned_text = clean_bill_text(text)
+    steps.thinking(
+        "Analyzing bill with local Gemma",
+        f"Extracting structured fields from {pdf_path.name}",
+        filename=pdf_path.name,
+    )
     extraction = extract_bill_from_text(cleaned_text, ollama_client)
     is_valid, validation_errors = validate_bill_extraction(extraction, cleaned_text)
 
@@ -96,6 +109,17 @@ def process_bill_file(
         validation_errors=validation_errors,
     )
     bill_id = bill_repo.create(bill)
+
+    if is_valid and not bill.requires_review:
+        steps.success(
+            "Bill validated",
+            f"{extraction.provider_name or 'Unknown'} · ${bill.amount_due} due {bill.due_date}",
+            bill_id=bill_id,
+            confidence=extraction.extraction_confidence,
+        )
+    else:
+        reason = "; ".join(validation_errors) if validation_errors else (bill.review_reason or "Review required")
+        steps.warning("Bill flagged for review", reason, bill_id=bill_id)
 
     audit_repo.log_event(
         AuditEvent(
@@ -156,17 +180,21 @@ def process_upload_zip(
     zip_path: Path,
     session: Session,
     ollama_client: Optional[OllamaClient] = None,
+    steps: Optional[AgentStepEmitter] = None,
 ) -> dict:
     """Process entire ZIP upload."""
     ollama_client = ollama_client or OllamaClient()
+    steps = steps or AgentStepEmitter()
     job_repo = JobRepository(session)
-    bill_repo = BillRepository(session)
     audit_repo = AuditRepository(session)
     task_repo = PaymentTaskRepository(session)
 
+    steps.thinking("Initializing agent", "Checking local Ollama and Gemma model availability")
     try:
         ollama_client.ensure_available()
+        steps.success("Ollama ready", f"Model: {ollama_client.model}")
     except OllamaClientError as exc:
+        steps.error("Ollama unavailable", str(exc))
         return {
             "job_id": "",
             "success": False,
@@ -177,6 +205,7 @@ def process_upload_zip(
         }
 
     job_id = job_repo.create()
+    steps.tool("Job created", f"Assigned job ID {job_id}", job_id=job_id)
     audit_repo.log_event(
         AuditEvent(
             event_id="",
@@ -189,6 +218,7 @@ def process_upload_zip(
     )
 
     try:
+        steps.tool("Validating ZIP archive", zip_path.name)
         output_dir = JOBS_DIR / job_id
         pdf_paths, extract_errors = extract_pdfs_from_zip(
             zip_path,
@@ -198,6 +228,8 @@ def process_upload_zip(
         )
 
         if extract_errors:
+            for err in extract_errors:
+                steps.error("ZIP validation failed", err)
             job_repo.update_status(job_id, "failed", "; ".join(extract_errors))
             return {
                 "job_id": job_id,
@@ -208,6 +240,7 @@ def process_upload_zip(
                 "duplicates_detected": 0,
             }
 
+        steps.success("ZIP validated", f"Found {len(pdf_paths)} PDF bill(s)")
         audit_repo.log_event(
             AuditEvent(
                 event_id="",
@@ -224,12 +257,18 @@ def process_upload_zip(
         processing_errors: list[str] = []
         all_bills = []
 
-        for pdf_path in pdf_paths:
+        for index, pdf_path in enumerate(pdf_paths, start=1):
+            steps.thinking(
+                f"Processing bill {index}/{len(pdf_paths)}",
+                pdf_path.name,
+                filename=pdf_path.name,
+            )
             success, bill_id, validation_errors = process_bill_file(
                 pdf_path,
                 job_id,
                 session,
                 ollama_client,
+                steps=steps,
             )
             if success and bill_id:
                 bills_created += 1
@@ -241,10 +280,12 @@ def process_upload_zip(
             elif not success:
                 processing_errors.extend(validation_errors)
 
+        steps.thinking("Checking for logical duplicates", "Comparing provider, account, period, amount")
         logical_dups = detect_logical_duplicates(all_bills)
         duplicates_detected = len(logical_dups)
         for bill_id_1, bill_id_2 in logical_dups:
             bill_repo.update(bill_id_1, status=BillStatus.DUPLICATE.value, requires_review=True)
+            steps.warning("Logical duplicate detected", f"{bill_id_1} matches {bill_id_2}")
             audit_repo.log_event(
                 AuditEvent(
                     event_id="",
@@ -257,11 +298,14 @@ def process_upload_zip(
                 )
             )
 
+        steps.thinking("Building payment queue", "Prioritizing bills by due date")
+        tasks_created = 0
         for bill in all_bills:
             refreshed = bill_repo.get(bill.bill_id)
             if refreshed and is_payment_eligible(refreshed):
                 task = create_payment_task(refreshed)
                 task_id = task_repo.create(task)
+                tasks_created += 1
                 audit_repo.log_event(
                     AuditEvent(
                         event_id="",
@@ -276,6 +320,11 @@ def process_upload_zip(
                 )
 
         job_repo.update_status(job_id, "completed")
+        steps.success(
+            "Ingestion complete",
+            f"{bills_created} bills · {tasks_created} payment tasks · {duplicates_detected} duplicates",
+            job_id=job_id,
+        )
         return {
             "job_id": job_id,
             "success": True,
@@ -287,6 +336,7 @@ def process_upload_zip(
 
     except Exception as exc:
         logger.error("Error processing upload: %s", exc, exc_info=True)
+        steps.error("Processing failed", str(exc))
         job_repo.update_status(job_id, "failed", str(exc))
         return {
             "job_id": job_id,

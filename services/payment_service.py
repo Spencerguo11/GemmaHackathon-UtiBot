@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -11,6 +12,7 @@ from agents.verification_agent import verify_confirmation_page
 from browser.playwright_controller import browser_session, screenshot_path
 from database.repositories import AuditRepository, BillRepository, PaymentTaskRepository, TransactionRepository
 from models import AuditEvent, BillStatus, EventType, TaskStatus, Transaction
+from services.agent_steps import AgentStepEmitter
 from services.provider_service import is_trusted_payment_url
 
 logger = logging.getLogger(__name__)
@@ -21,26 +23,35 @@ def _account_digits(masked_account: str) -> str:
     return digits or "1234567890"
 
 
-def _run_electric_flow(page, bill, *, submit: bool) -> None:
+def _run_electric_flow(page, bill, *, submit: bool, steps: AgentStepEmitter) -> None:
     payment_url = bill.verified_payment_url
     if not payment_url or not is_trusted_payment_url(payment_url):
         raise ValueError("Bill does not have a trusted mock payment URL")
 
+    steps.tool("Opening trusted payment URL", payment_url)
     page.goto(payment_url, wait_until="domcontentloaded")
+    steps.tool("Entering account number", bill.account_number_masked)
     page.fill("#account_number", _account_digits(bill.account_number_masked))
     page.click("#continue")
     page.wait_for_load_state("domcontentloaded")
+    steps.tool("Entering payment amount", f"${bill.amount_due:.2f}")
     page.fill("#payment_amount", f"{bill.amount_due:.2f}")
     page.click("#continue")
     page.wait_for_load_state("domcontentloaded")
 
     if submit:
+        steps.tool("Submitting mock payment", "Final action after human approval")
         page.click("#submit_payment")
         page.wait_for_load_state("domcontentloaded")
 
 
-def prepare_mock_payment(session: Session, task_id: str) -> dict:
+def prepare_mock_payment(
+    session: Session,
+    task_id: str,
+    steps: Optional[AgentStepEmitter] = None,
+) -> dict:
     """Navigate to review page and pause before final submission."""
+    steps = steps or AgentStepEmitter()
     task_repo = PaymentTaskRepository(session)
     bill_repo = BillRepository(session)
     audit_repo = AuditRepository(session)
@@ -52,6 +63,7 @@ def prepare_mock_payment(session: Session, task_id: str) -> dict:
     if not bill:
         raise ValueError("Bill not found")
 
+    steps.thinking("Preparing mock payment", f"{bill.provider_name} · ${bill.amount_due}")
     audit_repo.log_event(
         AuditEvent(
             event_id="",
@@ -66,8 +78,9 @@ def prepare_mock_payment(session: Session, task_id: str) -> dict:
     )
 
     with browser_session(headless=True) as page:
-        _run_electric_flow(page, bill, submit=False)
+        _run_electric_flow(page, bill, submit=False, steps=steps)
         if "review your payment" not in page.inner_text("body").lower():
+            steps.error("Browser flow failed", "Could not reach payment review page")
             raise RuntimeError("Could not reach payment review page")
 
     task_repo.update(task_id, status=TaskStatus.AWAITING_APPROVAL.value)
@@ -88,17 +101,31 @@ def prepare_mock_payment(session: Session, task_id: str) -> dict:
             },
         )
     )
-    return {
+
+    approval_payload = {
+        "task_id": task_id,
         "provider": bill.provider_name,
         "account_number_masked": bill.account_number_masked,
         "amount": str(bill.amount_due),
         "payment_method": "Mock checking account ••••1234",
         "scheduled_date": datetime.utcnow().strftime("%Y-%m-%d"),
     }
+    steps.permission(
+        "Human approval required",
+        f"Submit ${bill.amount_due} to {bill.provider_name}?",
+        **approval_payload,
+    )
+    return approval_payload
 
 
-def submit_mock_payment(session: Session, task_id: str, approved: bool = False) -> dict:
+def submit_mock_payment(
+    session: Session,
+    task_id: str,
+    approved: bool = False,
+    steps: Optional[AgentStepEmitter] = None,
+) -> dict:
     """Submit mock payment only after explicit approval."""
+    steps = steps or AgentStepEmitter()
     task_repo = PaymentTaskRepository(session)
     bill_repo = BillRepository(session)
     audit_repo = AuditRepository(session)
@@ -112,10 +139,12 @@ def submit_mock_payment(session: Session, task_id: str, approved: bool = False) 
         raise ValueError("Bill not found")
 
     if not approved:
+        steps.warning("Payment cancelled", "User denied mock payment submission")
         task_repo.update(task_id, status=TaskStatus.CANCELLED.value)
         bill_repo.update(task.bill_id, status=BillStatus.READY.value)
         return {"success": False, "cancelled": True}
 
+    steps.success("Approval granted", "Proceeding with mock payment submission")
     audit_repo.log_event(
         AuditEvent(
             event_id="",
@@ -131,8 +160,10 @@ def submit_mock_payment(session: Session, task_id: str, approved: bool = False) 
 
     screenshot_file = screenshot_path(task_id)
     with browser_session(headless=True) as page:
-        _run_electric_flow(page, bill, submit=True)
+        _run_electric_flow(page, bill, submit=True, steps=steps)
+        steps.tool("Capturing confirmation screenshot", str(screenshot_file))
         page.screenshot(path=str(screenshot_file))
+        steps.thinking("Verifying payment confirmation", "Checking amount, provider, confirmation number")
         verification = verify_confirmation_page(page.inner_text("body"), bill)
 
     now = datetime.utcnow()
@@ -157,6 +188,11 @@ def submit_mock_payment(session: Session, task_id: str, approved: bool = False) 
             completed_at=now,
         )
         bill_repo.update(task.bill_id, status=BillStatus.PAID.value)
+        steps.success(
+            "Payment verified",
+            f"Confirmation {verification.confirmation_number}",
+            confirmation_number=verification.confirmation_number,
+        )
         audit_repo.log_event(
             AuditEvent(
                 event_id="",
@@ -190,6 +226,7 @@ def submit_mock_payment(session: Session, task_id: str, approved: bool = False) 
             "screenshot_path": str(screenshot_file),
         }
 
+    steps.error("Verification failed", verification.failure_reason or "Unknown error")
     task_repo.update(
         task_id,
         status=TaskStatus.FAILED.value,
