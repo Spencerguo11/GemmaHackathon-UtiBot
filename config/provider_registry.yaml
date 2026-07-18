@@ -1,4 +1,4 @@
-"""Provider registry for utility companies."""
+# Provider registry for utility companies
 Rocky Mountain Power Demo:
   canonical_name: "Rocky Mountain Power Demo"
   aliases:

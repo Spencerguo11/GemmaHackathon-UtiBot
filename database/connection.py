@@ -1,8 +1,10 @@
 """Database connection and initialization."""
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
 from pathlib import Path
-from config import get_settings, DATA_DIR
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+
+from config import DATA_DIR, PROJECT_ROOT, get_settings
 from database.orm_models import Base
 
 settings = get_settings()
@@ -11,11 +13,13 @@ settings = get_settings()
 def get_database_url() -> str:
     """Get database URL from settings."""
     db_url = settings.database_url
-    # Handle relative paths
     if db_url.startswith("sqlite:///"):
         rel_path = db_url.replace("sqlite:///", "")
-        abs_path = DATA_DIR / rel_path
-        return f"sqlite:///{abs_path}"
+        db_path = Path(rel_path)
+        if not db_path.is_absolute():
+            db_path = PROJECT_ROOT / db_path
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        return f"sqlite:///{db_path}"
     return db_url
 
 

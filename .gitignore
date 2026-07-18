@@ -32,6 +32,8 @@ uploads/
 # Screenshots and receipts
 screenshots/
 receipts/
+data/screenshots/
+data/receipts/
 
 # IDE
 .vscode/

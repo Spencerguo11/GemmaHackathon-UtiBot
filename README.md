@@ -1,133 +1,99 @@
-# 🔌 Utility Coordinator AI Assistant
+# Utility Coordinator AI Assistant
 
-A hackathon MVP for locally processing utility bills using Gemma 4 through Ollama, with mock provider payment automation.
+Local-first utility bill processing with Gemma through Ollama, Streamlit review, and mock provider payment automation.
 
-**Key Feature**: All AI reasoning and bill processing runs locally. No cloud APIs. No real payments.
+## Product Overview
 
-## 🎯 Product Overview
+Upload a ZIP of utility bill PDFs, extract structured data with on-device Gemma, review and edit results, prioritize payment tasks, and test a safe mock payment workflow on localhost provider sites.
 
-Upload a ZIP of utility bills → Extract structured data with local Gemma → Review and edit in dashboard → Test payment workflows on mock providers → Generate audit report.
+**Privacy:** Bill extraction and AI reasoning run locally through Ollama. Bill documents are not sent to a cloud-hosted LLM. Mock provider interactions remain on localhost.
 
-### MVP Capabilities
+## Architecture
 
-- ✅ **Phase 1-4 COMPLETE**: ZIP upload → PDF extraction → Gemma analysis → Streamlit dashboard
-- ⏳ Phase 5-9: Mock providers, browser automation, payment testing, audit reporting
-
-## 🏗️ Architecture
-
-```
-utility-coordinator/
-├── app.py                      # Streamlit UI
-├── config/                     # Settings & provider registry
-├── models/                     # Pydantic data models
-├── ingestion/                  # ZIP, PDF, text processing
-├── services/                   # Ollama, validation, extraction
-├── database/                   # SQLAlchemy ORM & repos
-├── workflows/                  # Process orchestration
-├── browser/                    # (Phase 7) Playwright automation
-├── agents/                     # (Phase 7) Navigation & verification
-├── mock_providers/             # (Phase 5) FastAPI mock sites
-├── scripts/                    # Utilities & initialization
-├── tests/                      # Unit tests
-└── data/                       # Jobs & artifacts
+```text
+app.py                 Streamlit dashboard
+config/                Settings + provider registry
+models/                Pydantic domain models
+ingestion/             ZIP, PDF, duplicate detection
+agents/                Document, navigation, verification agents
+services/              Ollama client, validation, payment, audit
+database/              SQLAlchemy ORM + repositories
+workflows/             Ingestion + payment orchestration
+browser/               Playwright observer/executor
+mock_providers/        FastAPI demo utility sites
+scripts/               Setup and runtime helpers
+tests/                 Unit tests (Ollama mocked/not required)
 ```
 
-## 🚀 Quick Start
+## Safety Boundaries
 
-### 1. Set Up Python Environment
+- No real utility providers, credentials, or financial transactions
+- Trusted payment URLs come only from `config/provider_registry.yaml`
+- Human approval is required before final mock payment submission
+- Browser actions are restricted to structured action types
+
+## Prerequisites
+
+- Python 3.11+
+- [Ollama](https://ollama.com/)
+- Local Gemma model: `gemma4:e4b`
+
+## Setup
 
 ```bash
 cd GemmaHackathon-UtiBot
-python3 -m venv .venv
+python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-### 2. Configure Environment
-
-```bash
+playwright install chromium
 cp .env.example .env
-```
-
-### 3. Initialize Database
-
-```bash
 python scripts/initialize_db.py
-```
-
-### 4. Verify Ollama & Gemma 4
-
-```bash
 python scripts/check_ollama.py
 ```
 
-If not running:
+If Ollama is not running:
+
 ```bash
-ollama serve  # Terminal 1
-ollama pull gemma4:e4b  # Terminal 2
+ollama serve
+ollama pull gemma4:e4b
 ```
 
-### 5. Start Streamlit
+## Run the App
+
+Terminal 1 – mock providers:
+
+```bash
+python scripts/run_mock_providers.py
+```
+
+Terminal 2 – Streamlit:
 
 ```bash
 streamlit run app.py
 ```
 
-Opens at: `http://localhost:8501`
+Open `http://localhost:8501`.
 
-## 📚 How to Use
+## Demo Workflow
 
-1. **Upload**: Click 📤 tab, select ZIP with PDFs, click 🚀
-2. **Review**: Click 📋 tab, see extracted bills
-3. **Payment** (Phase 5+): Click 💰 tab
-4. **Report** (Phase 8+): Click 📊 tab
+1. Upload a ZIP containing PDF utility bills.
+2. Review extracted bills in the **Bills** tab and edit fields if needed.
+3. Open **Payment Queue**, choose a `ready` electric bill task.
+4. Click **Prepare mock payment** to reach the review step.
+5. Approve or cancel at the human approval gate.
+6. View confirmations, screenshots, and audit events in **Report**.
 
-## 📊 Data Models
+Mock provider demo credentials (gas site): `demo` / `demo123`
 
-- **Bill**: provider_name, utility_type, account_masked, amount_due, due_date, status
-- **PaymentTask**: bill_id, priority, status, approval
-- **Transaction**: confirmation_number, amount, verification_status
-- **AuditEvent**: Comprehensive logging of all actions
-
-## 🔒 Safety
-
-- ✅ Local processing only (no cloud LLMs)
-- ✅ Safe ZIP extraction (no path traversal)
-- ✅ Human approval gate required
-- ✅ No real credentials or payments
-- ✅ Mock providers on localhost only
-
-## 📁 Implementation Status
-
-### ✅ Phase 1-4: COMPLETE
-
-- [x] Project skeleton
-- [x] Settings & configuration
-- [x] Pydantic models
-- [x] SQLAlchemy ORM
-- [x] Safe ZIP extraction
-- [x] PDF extraction
-- [x] Duplicate detection
-- [x] Ollama client
-- [x] Document extraction agent
-- [x] Validation service
-- [x] SQLite repositories
-- [x] Streamlit UI
-- [x] Ingestion workflow
-
-### ⏳ Phase 5-9: Mock Providers, Automation, Reporting
-
-## 🧪 Testing
+## Tests
 
 ```bash
-pytest -v                          # Run all tests
-pytest tests/test_zip_handler.py   # Run specific test
-pytest --cov=.                     # Coverage report
+pytest
 ```
 
-## 🔧 Configuration
+## Configuration
 
-Edit `.env`:
+Environment variables (see `.env.example`):
 
 ```env
 OLLAMA_HOST=http://localhost:11434
@@ -138,37 +104,17 @@ HIGH_AMOUNT_REVIEW_THRESHOLD=1000
 MAX_ZIP_FILES=25
 MAX_UNCOMPRESSED_MB=100
 MAX_BROWSER_STEPS=15
-DEBUG=False
 ```
 
-## 📞 Troubleshooting
+## Known Limitations
 
-**Ollama not running**: `ollama serve`
+- Scanned/image-only PDFs are flagged for review (no OCR in MVP)
+- Automated Playwright payment flow is implemented for the electric mock provider
+- Gas and water mock sites are available but not fully automated yet
+- Navigation agent uses deterministic safety rules for the demo electric flow
 
-**Model not found**: `ollama pull gemma4:e4b`
+## Future Enhancements
 
-**Database locked**: Delete `data/utility.db-shm` and retry
-
-**PDF has no text**: Scanned PDFs not supported yet (Phase 9+)
-
-## 📖 Architecture Layers
-
-1. **Ingestion**: ZIP → PDF extraction → text cleaning → duplicate detection
-2. **AI Services**: Ollama client → document extraction → validation
-3. **Database**: SQLAlchemy ORM → repositories → SQLite
-4. **Workflow**: Orchestration of entire process
-5. **UI**: Streamlit dashboard with tabs
-6. **Browser** (Phase 7): Playwright automation → navigation agents
-7. **Mock Providers** (Phase 5): FastAPI local websites
-
-## 🎯 Next Steps
-
-1. Phase 5: Build three mock provider FastAPI apps
-2. Phase 6: Playwright automation for electric provider
-3. Phase 7: Safety layer (page observer, navigation agent)
-4. Phase 8: Human approval UI and verification
-5. Phase 9: Tests and polish
-
----
-
-**Built with Gemma 4, Ollama, and ❤️**
+- OCR for scanned bills
+- Full LLM-assisted navigation for gas/water providers
+- Receipt PDF export and richer audit analytics

@@ -1,81 +1,78 @@
-"""Ollama Gemma client."""
+"""Ollama Gemma client using the official Ollama Python package."""
+from __future__ import annotations
+
 import json
 import logging
 from typing import Optional
-import requests
+
+import ollama
+
 from config import get_settings
 
 logger = logging.getLogger(__name__)
 
 
+class OllamaClientError(Exception):
+    """Raised when Ollama is unavailable or model cannot be used."""
+
+
 class OllamaClient:
-    """Client for communicating with Ollama."""
+    """Client for communicating with a local Ollama server."""
 
     def __init__(self, host: Optional[str] = None, model: Optional[str] = None):
-        """Initialize Ollama client."""
         settings = get_settings()
         self.host = host or settings.ollama_host
         self.model = model or settings.ollama_model
-        self.endpoint = f"{self.host}/api/generate"
+        self.client = ollama.Client(host=self.host)
+
+    def list_models(self) -> list[str]:
+        """Return installed model names."""
+        response = self.client.list()
+        return [model.model for model in response.models]
 
     def is_available(self) -> bool:
-        """Check if Ollama is running and model is available."""
+        """Check if Ollama is running and the configured model is installed."""
         try:
-            response = requests.get(
-                f"{self.host}/api/tags",
-                timeout=5,
-            )
-            if response.status_code != 200:
-                return False
-            
-            data = response.json()
-            models = [m.get("name") for m in data.get("models", [])]
-            return self.model in models
-        except Exception as e:
-            logger.error(f"Error checking Ollama availability: {e}")
+            return self.model in self.list_models()
+        except Exception as exc:
+            logger.error("Error checking Ollama availability: %s", exc)
             return False
+
+    def ensure_available(self) -> None:
+        """Raise a clear error if Ollama or the model is unavailable."""
+        try:
+            models = self.list_models()
+        except Exception as exc:
+            raise OllamaClientError(
+                f"Cannot reach Ollama at {self.host}. Start it with: ollama serve"
+            ) from exc
+
+        if self.model not in models:
+            raise OllamaClientError(
+                f"Model '{self.model}' is not installed. Run: ollama pull {self.model}"
+            )
 
     def generate(
         self,
         prompt: str,
         temperature: float = 0.0,
         timeout: int = 120,
+        json_format: bool = False,
     ) -> Optional[str]:
-        """
-        Generate response from Ollama.
-        
-        Args:
-            prompt: Input prompt
-            temperature: Temperature for generation (0 = deterministic)
-            timeout: Request timeout in seconds
-        
-        Returns:
-            Generated response or None on error
-        """
+        """Generate a response from the local model."""
         try:
-            response = requests.post(
-                self.endpoint,
-                json={
-                    "model": self.model,
-                    "prompt": prompt,
-                    "temperature": temperature,
-                    "stream": False,
-                },
-                timeout=timeout,
-            )
-            
-            if response.status_code != 200:
-                logger.error(f"Ollama error {response.status_code}: {response.text}")
-                return None
-            
-            data = response.json()
-            return data.get("response", "").strip()
-        
-        except requests.exceptions.Timeout:
-            logger.error(f"Ollama request timeout (>{timeout}s)")
-            return None
-        except Exception as e:
-            logger.error(f"Error calling Ollama: {e}")
+            kwargs = {
+                "model": self.model,
+                "prompt": prompt,
+                "options": {"temperature": temperature},
+            }
+            if json_format:
+                kwargs["format"] = "json"
+
+            response = self.client.generate(**kwargs)
+            return (response.get("response") or "").strip()
+        except Exception as exc:
+            logger.error("Error calling Ollama: %s", exc)
             return None
 
     def extract_json(
@@ -85,40 +82,28 @@ class OllamaClient:
         timeout: int = 120,
         max_retries: int = 1,
     ) -> Optional[dict]:
-        """
-        Generate JSON response from Ollama.
-        
-        Args:
-            prompt: Input prompt
-            temperature: Temperature for generation
-            timeout: Request timeout
-            max_retries: Max retries on malformed JSON
-        
-        Returns:
-            Parsed JSON dict or None on error
-        """
+        """Generate and parse JSON from Ollama with one retry on malformed output."""
         for attempt in range(max_retries + 1):
-            response = self.generate(prompt, temperature, timeout)
-            
+            response = self.generate(
+                prompt,
+                temperature=temperature,
+                timeout=timeout,
+                json_format=True,
+            )
             if not response:
                 return None
-            
+
             try:
-                # Try to extract JSON from response
-                # Sometimes the model includes explanatory text
                 if "```json" in response:
                     json_str = response.split("```json")[1].split("```")[0].strip()
                 else:
                     json_str = response
-                
                 return json.loads(json_str)
-            
-            except json.JSONDecodeError as e:
+            except json.JSONDecodeError as exc:
                 if attempt < max_retries:
-                    logger.warning(f"Malformed JSON (attempt {attempt + 1}), retrying...")
+                    logger.warning("Malformed JSON (attempt %s), retrying...", attempt + 1)
                 else:
-                    logger.error(f"Failed to parse JSON: {e}")
-                    logger.debug(f"Response: {response}")
+                    logger.error("Failed to parse JSON: %s", exc)
+                    logger.debug("Response: %s", response)
                     return None
-        
         return None
